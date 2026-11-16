@@ -32,7 +32,7 @@ object Ocr {
                 val bmp = Imaging.decodeFile(f.absolutePath, 2200)
                 if (bmp != null) {
                     tess.setImage(bmp)
-                    val t = tess.utf8Text ?: ""
+                    val t = tess.getUTF8Text() ?: ""
                     if (t.isNotBlank()) {
                         if (sb.isNotEmpty()) sb.append("\n\n")
                         sb.append(t.trim())
