@@ -3,6 +3,7 @@ package com.omarsalama58.snapdoc.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
