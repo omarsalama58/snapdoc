@@ -77,4 +77,6 @@ dependencies {
     implementation("androidx.camera:camera-view:$camerax")
 
     implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
+    implementation("org.opencv:opencv:4.9.0")
+    implementation("com.google.zxing:core:3.5.3")
 }

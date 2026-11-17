@@ -123,6 +123,11 @@ object Imaging {
 
     /** Returns 8 normalized values: TL, TR, BR, BL (x,y each). */
     fun detectCorners(src: Bitmap): FloatArray {
+        EdgeDetector.detect(src)?.let { return it }
+        return detectCornersLegacy(src)
+    }
+
+    private fun detectCornersLegacy(src: Bitmap): FloatArray {
         val fallback = floatArrayOf(0.08f, 0.08f, 0.92f, 0.08f, 0.92f, 0.92f, 0.08f, 0.92f)
         try {
             val sc = 220f / max(src.width, src.height)
