@@ -29,7 +29,7 @@ import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CompareArrows
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -44,7 +44,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -60,6 +59,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -71,6 +71,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -80,6 +82,8 @@ import com.omarsalama58.snapdoc.data.Prefs
 import com.omarsalama58.snapdoc.data.Signatures
 import com.omarsalama58.snapdoc.imaging.EditParams
 import com.omarsalama58.snapdoc.imaging.Filter
+import com.omarsalama58.snapdoc.imaging.Filters
+import com.omarsalama58.snapdoc.imaging.ImageOps
 import com.omarsalama58.snapdoc.imaging.Imaging
 import com.omarsalama58.snapdoc.imaging.Overlay
 import com.omarsalama58.snapdoc.imaging.SigOv
@@ -105,7 +109,7 @@ import java.io.File
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
-private enum class EditMode { FILTERS, ADJUST, DRAW, TEXT, SIGN }
+private enum class EditMode { FILTERS, ADJUST, DRAW, TEXT, SIGN, ERASE }
 
 private val inkColors = listOf(
     Color(0xFF000000), Color(0xFFD32F2F), Color(0xFF1565C0), Color(0xFF2E7D32), Color(0xFFFFFFFF)
@@ -139,17 +143,21 @@ fun EditorScreen(
     var filter by remember { mutableStateOf(Filter.ORIGINAL) }
     var brightness by remember { mutableFloatStateOf(0f) }
     var contrast by remember { mutableFloatStateOf(1f) }
-    var deshadow by remember { mutableStateOf(false) }
-    val params = EditParams(filter, brightness, contrast, deshadow)
+    var sharpness by remember { mutableFloatStateOf(0f) }
+    var applyAll by remember { mutableStateOf(false) }
+    val params = EditParams(filter, brightness, contrast, sharpness)
 
     var mode by remember { mutableStateOf(EditMode.FILTERS) }
     val overlays = remember { mutableStateListOf<Overlay>() }
+    val erases = remember { mutableStateListOf<StrokeOv>() }
     var selected by remember { mutableIntStateOf(-1) }
     var live by remember { mutableStateOf<List<Offset>>(emptyList()) }
+    var comparing by remember { mutableStateOf(false) }
 
     var drawColor by remember { mutableStateOf(inkColors[2]) }
     var highlighter by remember { mutableStateOf(false) }
     var drawWidth by remember { mutableFloatStateOf(0.008f) }
+    var eraseWidth by remember { mutableFloatStateOf(0.03f) }
     var textColor by remember { mutableStateOf(inkColors[0]) }
     var textSize by remember { mutableFloatStateOf(0.06f) }
     var textDialog by remember { mutableStateOf<TextDialogState?>(null) }
@@ -164,9 +172,20 @@ fun EditorScreen(
     }
     val rotated = remember(previewBase, rotation) { previewBase?.let { Imaging.rotate(it, rotation) } }
     var processed by remember { mutableStateOf<Bitmap?>(null) }
-    LaunchedEffect(rotated, filter, brightness, contrast, deshadow) {
+    LaunchedEffect(rotated, filter, brightness, contrast, sharpness, erases.size) {
         val src = rotated ?: return@LaunchedEffect
-        processed = withContext(Dispatchers.Default) { Imaging.applyParams(src, params) }
+        val p = EditParams(filter, brightness, contrast, sharpness)
+        val er = erases.toList()
+        processed = withContext(Dispatchers.Default) { Filters.apply(ImageOps.erase(src, er), p) }
+    }
+
+    // small previews of every filter, like CamScanner's filter strip
+    val thumbs by produceState<Map<Filter, ImageBitmap>>(emptyMap(), rotated) {
+        val src = rotated ?: return@produceState
+        value = withContext(Dispatchers.Default) {
+            val small = Imaging.scaleDown(src, 220)
+            Filter.values().associateWith { f -> Filters.apply(small, EditParams(filter = f)).asImageBitmap() }
+        }
     }
 
     fun normalize(pos: Offset): Offset {
@@ -198,18 +217,27 @@ fun EditorScreen(
         if (saving) return
         saving = true
         val snapshot = overlays.toList()
+        val erased = erases.toList()
         val rot = rotation
         val p = params
         val src = sourceFile
+        val all = applyAll
         scope.launch {
             withContext(Dispatchers.Default) {
                 val loaded = Imaging.decodeFile(src.absolutePath, Imaging.MAX_SIDE) ?: return@withContext
                 val full = Imaging.rotate(loaded, rot)
-                val out = Imaging.applyParams(full, p)
+                val out = Filters.apply(ImageOps.erase(full, erased), p)
                 AndroidCanvas(out).also { c ->
                     Imaging.drawOverlays(c, out.width.toFloat(), out.height.toFloat(), snapshot)
                 }
                 store.replacePage(doc, index, out, alsoOrig = false)
+                if (all && !Filters.isDefault(p)) {
+                    for (j in doc.pages.indices) {
+                        if (j == index) continue
+                        val b = Imaging.decodeFile(store.origFile(doc, j).absolutePath, Imaging.MAX_SIDE) ?: continue
+                        store.replacePage(doc, j, Filters.apply(b, p), alsoOrig = false)
+                    }
+                }
             }
             saving = false
             onSaved()
@@ -218,9 +246,10 @@ fun EditorScreen(
 
     AppBackground {
         Column(Modifier.fillMaxSize()) {
-            TopBar("Edit page ${index + 1}", onBack = onBack) {
+            TopBar("Page ${index + 1} of ${doc.pages.size}", onBack = onBack) {
                 IconButton(onClick = { save() }) {
-                    Icon(Icons.Filled.Check, contentDescription = "Save", tint = CyanAccent)
+                    Icon(Icons.Filled.Check, contentDescription = "Save", tint = NavyDeep,
+                        modifier = Modifier.size(38.dp).background(CyanAccent, RoundedCornerShape(19.dp)).padding(7.dp))
                 }
             }
 
@@ -230,9 +259,9 @@ fun EditorScreen(
                     Modifier
                         .fillMaxSize()
                         .onSizeChanged { canvasSize = it }
-                        // drawing
+                        // drawing and erasing
                         .pointerInput(mode) {
-                            if (mode == EditMode.DRAW) {
+                            if (mode == EditMode.DRAW || mode == EditMode.ERASE) {
                                 detectDragGestures(
                                     onDragStart = { live = listOf(normalize(it)) },
                                     onDrag = { change, _ ->
@@ -241,9 +270,13 @@ fun EditorScreen(
                                     },
                                     onDragEnd = {
                                         if (live.isNotEmpty()) {
-                                            val col = if (highlighter) highlightColor else drawColor
-                                            val w = if (highlighter) drawWidth * 3.5f else drawWidth
-                                            overlays.add(StrokeOv(live, col.toArgb(), w))
+                                            if (mode == EditMode.ERASE) {
+                                                erases.add(StrokeOv(live, Color.White.toArgb(), eraseWidth))
+                                            } else {
+                                                val col = if (highlighter) highlightColor else drawColor
+                                                val w = if (highlighter) drawWidth * 3.5f else drawWidth
+                                                overlays.add(StrokeOv(live, col.toArgb(), w))
+                                            }
                                         }
                                         live = emptyList()
                                     },
@@ -294,7 +327,7 @@ fun EditorScreen(
                             }
                         }
                 ) {
-                    val bmp = processed
+                    val bmp = if (comparing) rotated else processed
                     if (bmp != null) {
                         val r = Imaging.fitRect(size.width, size.height, bmp.width, bmp.height)
                         drawImage(
@@ -302,36 +335,64 @@ fun EditorScreen(
                             dstOffset = IntOffset(r.l.roundToInt(), r.t.roundToInt()),
                             dstSize = IntSize(r.w.roundToInt(), r.h.roundToInt())
                         )
-                        drawIntoCanvas { c ->
-                            val nc = c.nativeCanvas
-                            nc.save()
-                            nc.translate(r.l, r.t)
-                            val all = if (live.isNotEmpty()) {
-                                val col = if (highlighter) highlightColor else drawColor
-                                val w = if (highlighter) drawWidth * 3.5f else drawWidth
-                                overlays.toList() + StrokeOv(live, col.toArgb(), w)
-                            } else overlays.toList()
-                            Imaging.drawOverlays(nc, r.w, r.h, all)
-                            val sel = overlays.getOrNull(selected)
-                            if (sel != null && (mode == EditMode.TEXT || mode == EditMode.SIGN)) {
-                                val b = Imaging.overlayBounds(sel, r.w, r.h)
-                                if (b != null) {
-                                    val p = Paint().apply {
-                                        style = Paint.Style.STROKE
-                                        color = CyanAccent.toArgb()
-                                        strokeWidth = 4f
-                                        pathEffect = android.graphics.DashPathEffect(floatArrayOf(14f, 10f), 0f)
+                        if (!comparing) {
+                            drawIntoCanvas { c ->
+                                val nc = c.nativeCanvas
+                                nc.save()
+                                nc.translate(r.l, r.t)
+                                var all: List<Overlay> = overlays.toList()
+                                if (live.isNotEmpty()) {
+                                    all = if (mode == EditMode.ERASE) {
+                                        all + StrokeOv(live, Color(0x88FF1744).toArgb(), eraseWidth)
+                                    } else {
+                                        val col = if (highlighter) highlightColor else drawColor
+                                        val w = if (highlighter) drawWidth * 3.5f else drawWidth
+                                        all + StrokeOv(live, col.toArgb(), w)
                                     }
-                                    b.inset(-10f, -10f)
-                                    nc.drawRect(b, p)
                                 }
+                                Imaging.drawOverlays(nc, r.w, r.h, all)
+                                val sel = overlays.getOrNull(selected)
+                                if (sel != null && (mode == EditMode.TEXT || mode == EditMode.SIGN)) {
+                                    val b = Imaging.overlayBounds(sel, r.w, r.h)
+                                    if (b != null) {
+                                        val p = Paint().apply {
+                                            style = Paint.Style.STROKE
+                                            color = CyanAccent.toArgb()
+                                            strokeWidth = 4f
+                                            pathEffect = android.graphics.DashPathEffect(floatArrayOf(14f, 10f), 0f)
+                                        }
+                                        b.inset(-10f, -10f)
+                                        nc.drawRect(b, p)
+                                    }
+                                }
+                                nc.restore()
                             }
-                            nc.restore()
                         }
                     }
                 }
                 if (processed == null) {
                     Text("Loading...", color = TextWhite, modifier = Modifier.align(Alignment.Center))
+                }
+
+                // hold to see the picture before the filter
+                Row(
+                    Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(10.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(Color(0xCC0A1B3A))
+                        .pointerInput(Unit) {
+                            detectTapGestures(onPress = {
+                                comparing = true
+                                tryAwaitRelease()
+                                comparing = false
+                            })
+                        }
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Filled.CompareArrows, contentDescription = null, tint = CyanAccent, modifier = Modifier.size(18.dp))
+                    Text("  Hold to compare", color = TextWhite, fontSize = 12.sp)
                 }
             }
 
@@ -344,19 +405,24 @@ fun EditorScreen(
             ) {
                 when (mode) {
                     EditMode.FILTERS -> {
-                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Filter.values().forEach { f ->
-                                FilterChip(selected = filter == f, onClick = { filter = f }, label = { Text(f.label) })
+                        if (doc.pages.size > 1) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 6.dp)) {
+                                Text("Pages to apply", color = TextMuted, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                                FilterChip(selected = !applyAll, onClick = { applyAll = false }, label = { Text("This page") })
+                                Spacer(Modifier.width(6.dp))
+                                FilterChip(selected = applyAll, onClick = { applyAll = true }, label = { Text("All pages") })
                             }
                         }
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
-                            Text("Remove shadows", color = TextWhite, modifier = Modifier.weight(1f))
-                            Switch(checked = deshadow, onCheckedChange = { deshadow = it })
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Filter.values().forEach { f ->
+                                FilterThumb(f, thumbs[f], selected = filter == f) { filter = f }
+                            }
                         }
                     }
                     EditMode.ADJUST -> {
                         LabeledSlider("Brightness", brightness, -100f, 100f) { brightness = it }
                         LabeledSlider("Contrast", contrast, 0.5f, 2f) { contrast = it }
+                        LabeledSlider("Sharpness", sharpness, 0f, 1f) { sharpness = it }
                     }
                     EditMode.DRAW -> {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -373,6 +439,15 @@ fun EditorScreen(
                             }) { Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo", tint = TextWhite) }
                         }
                         LabeledSlider("Thickness", drawWidth, 0.002f, 0.03f) { drawWidth = it }
+                    }
+                    EditMode.ERASE -> {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Paint over anything you want removed.", color = TextMuted, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                            IconButton(onClick = { if (erases.isNotEmpty()) erases.removeAt(erases.lastIndex) }) {
+                                Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo", tint = TextWhite)
+                            }
+                        }
+                        LabeledSlider("Brush size", eraseWidth, 0.01f, 0.1f) { eraseWidth = it }
                     }
                     EditMode.TEXT -> {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -460,22 +535,23 @@ fun EditorScreen(
                     .padding(vertical = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                ToolItem("Filters", Icons.Filled.AutoFixHigh, mode == EditMode.FILTERS) { mode = EditMode.FILTERS }
+                ToolItem("Filter", Icons.Filled.AutoFixHigh, mode == EditMode.FILTERS) { mode = EditMode.FILTERS }
                 ToolItem("Adjust", Icons.Filled.Tune, mode == EditMode.ADJUST) { mode = EditMode.ADJUST }
                 ToolItem("Crop", Icons.Filled.Crop, false) { onCrop(pageFile.absolutePath) }
                 ToolItem("Rotate", Icons.Filled.RotateRight, false) {
-                    if (overlays.isNotEmpty()) toast(ctx, "Rotate before adding text or drawings")
+                    if (overlays.isNotEmpty() || erases.isNotEmpty()) toast(ctx, "Rotate before adding text, drawings or erasing")
                     else rotation = (rotation + 90) % 360
                 }
-                ToolItem("Draw", Icons.Filled.Brush, mode == EditMode.DRAW) { mode = EditMode.DRAW; selected = -1 }
+                ToolItem("Erase", Icons.Filled.Brush, mode == EditMode.ERASE) { mode = EditMode.ERASE; selected = -1 }
+                ToolItem("Draw", Icons.Filled.Edit, mode == EditMode.DRAW) { mode = EditMode.DRAW; selected = -1 }
                 ToolItem("Text", Icons.Filled.TextFields, mode == EditMode.TEXT) { mode = EditMode.TEXT; selected = -1 }
                 ToolItem("Sign", Icons.Filled.Edit, mode == EditMode.SIGN) { mode = EditMode.SIGN; selected = -1 }
                 ToolItem("Original", Icons.Filled.Restore, useOrig) {
-                    if (overlays.isNotEmpty()) toast(ctx, "Remove text and drawings first")
+                    if (overlays.isNotEmpty() || erases.isNotEmpty()) toast(ctx, "Remove your edits first")
                     else {
                         useOrig = !useOrig
                         rotation = 0
-                        filter = Filter.ORIGINAL; brightness = 0f; contrast = 1f; deshadow = false
+                        filter = Filter.ORIGINAL; brightness = 0f; contrast = 1f; sharpness = 0f
                     }
                 }
             }
@@ -492,7 +568,7 @@ fun EditorScreen(
                         value = text,
                         onValueChange = { text = it },
                         singleLine = false,
-                        textStyle = androidx.compose.ui.text.TextStyle(color = TextWhite)
+                        textStyle = TextStyle(color = TextWhite)
                     )
                 },
                 confirmButton = {
@@ -519,6 +595,35 @@ fun EditorScreen(
 private data class TextDialogState(val text: String, val x: Float, val y: Float, val editIndex: Int)
 
 @Composable
+private fun FilterThumb(f: Filter, thumb: ImageBitmap?, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(width = 78.dp, height = 104.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.White)
+            .border(if (selected) 3.dp else 1.dp, if (selected) CyanAccent else Color(0xFF3A5A8C), RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+    ) {
+        if (thumb != null) {
+            Image(thumb, contentDescription = f.label, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        }
+        Text(
+            f.label,
+            color = if (selected) NavyDeep else TextWhite,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(if (selected) CyanAccent else Color(0xAA0A1B3A))
+                .padding(vertical = 3.dp),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+        )
+    }
+}
+
+@Composable
 private fun LabeledSlider(label: String, value: Float, min: Float, max: Float, onChange: (Float) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(label, color = TextWhite, fontSize = 13.sp, modifier = Modifier.width(84.dp))
@@ -536,7 +641,7 @@ private fun LabeledSlider(label: String, value: Float, min: Float, max: Float, o
 private fun ToolItem(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, active: Boolean, onClick: () -> Unit) {
     Column(
         Modifier
-            .width(72.dp)
+            .width(70.dp)
             .clickable(onClick = onClick)
             .padding(vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally

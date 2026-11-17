@@ -3,6 +3,7 @@ package com.omarsalama58.snapdoc.data
 import android.content.Context
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import com.omarsalama58.snapdoc.imaging.Filter
 import java.io.File
 
 class Prefs(ctx: Context) {
@@ -25,12 +26,12 @@ class Prefs(ctx: Context) {
         }
 
     /** Index into the Filter enum applied automatically to new scans. */
-    private val _defaultFilter = mutableIntStateOf(sp.getInt("defaultFilter", 1))
+    private val _defaultFilter = mutableIntStateOf(sp.getInt("defaultFilter2", Filter.ENHANCE.ordinal))
     var defaultFilter: Int
         get() = _defaultFilter.intValue
         set(v) {
             _defaultFilter.intValue = v
-            sp.edit().putInt("defaultFilter", v).apply()
+            sp.edit().putInt("defaultFilter2", v).apply()
         }
 }
 

@@ -2,12 +2,7 @@ package com.omarsalama58.snapdoc.ui
 
 import android.content.ClipData
 import android.content.ClipboardManager
-import android.content.ContentValues
 import android.content.Context
-import android.content.Intent
-import android.os.Build
-import android.os.Environment
-import android.provider.MediaStore
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -48,12 +43,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.FileProvider
-import com.omarsalama58.snapdoc.data.Doc
-import com.omarsalama58.snapdoc.data.DocStore
-import com.omarsalama58.snapdoc.data.Prefs
 import com.omarsalama58.snapdoc.imaging.Imaging
-import com.omarsalama58.snapdoc.pdf.PdfWriter
 import com.omarsalama58.snapdoc.ui.theme.CyanAccent
 import com.omarsalama58.snapdoc.ui.theme.NavyCard
 import com.omarsalama58.snapdoc.ui.theme.NavyDeep
@@ -62,7 +52,6 @@ import com.omarsalama58.snapdoc.ui.theme.TextMuted
 import com.omarsalama58.snapdoc.ui.theme.TextWhite
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -212,54 +201,3 @@ fun rememberThumb(path: String, key: Any?, size: Int = 500): State<ImageBitmap?>
     produceState<ImageBitmap?>(null, path, key) {
         value = withContext(Dispatchers.IO) { Imaging.decodeFile(path, size)?.asImageBitmap() }
     }
-
-/** Everything that leaves the app: PDF files, sharing, saving to Downloads. */
-object Exporter {
-    private fun safeName(n: String) = n.replace(Regex("[^A-Za-z0-9؀-ۿ._ -]"), "_").trim().ifEmpty { "SnapDoc" }
-
-    fun buildPdf(ctx: Context, store: DocStore, doc: Doc, prefs: Prefs): File {
-        val out = File(File(ctx.cacheDir, "export").also { it.mkdirs() }, safeName(doc.name) + ".pdf")
-        val files = doc.pages.indices.map { store.pageFile(doc, it) }
-        PdfWriter.write(out, files, prefs.a4, prefs.pdfQuality)
-        return out
-    }
-
-    private fun uriFor(ctx: Context, f: File) =
-        FileProvider.getUriForFile(ctx, ctx.packageName + ".fileprovider", f)
-
-    fun sharePdf(ctx: Context, pdf: File) {
-        val i = Intent(Intent.ACTION_SEND).apply {
-            type = "application/pdf"
-            putExtra(Intent.EXTRA_STREAM, uriFor(ctx, pdf))
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        ctx.startActivity(Intent.createChooser(i, "Share PDF"))
-    }
-
-    fun shareImages(ctx: Context, files: List<File>) {
-        val uris = ArrayList(files.map { uriFor(ctx, it) })
-        val i = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-            type = "image/jpeg"
-            putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        ctx.startActivity(Intent.createChooser(i, "Share images"))
-    }
-
-    /** Returns true when saved to Downloads/SnapDoc. */
-    fun saveToDownloads(ctx: Context, pdf: File): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
-        return try {
-            val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, pdf.name)
-                put(MediaStore.Downloads.MIME_TYPE, "application/pdf")
-                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/SnapDoc")
-            }
-            val uri = ctx.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return false
-            ctx.contentResolver.openOutputStream(uri)?.use { o -> pdf.inputStream().use { it.copyTo(o) } }
-            true
-        } catch (e: Exception) {
-            false
-        }
-    }
-}

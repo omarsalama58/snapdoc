@@ -20,20 +20,6 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-enum class Filter(val label: String) {
-    ORIGINAL("Original"),
-    ENHANCED("Enhanced"),
-    GRAY("Gray"),
-    BW("B&W")
-}
-
-data class EditParams(
-    val filter: Filter = Filter.ORIGINAL,
-    val brightness: Float = 0f,   // -100..100
-    val contrast: Float = 1f,     // 0.5..2
-    val deshadow: Boolean = false
-)
-
 // ---- Overlays drawn on top of a page. Coordinates are normalized (0..1) relative to the page. ----
 sealed interface Overlay
 data class TextOv(val text: String, val x: Float, val y: Float, val size: Float, val color: Int) : Overlay
@@ -295,108 +281,9 @@ object Imaging {
         return out
     }
 
-    // ---------------------------------------------------------------- filters
+    // ---------------------------------------------------------------- filters (see Filters.kt)
 
-    fun applyParams(src: Bitmap, p: EditParams): Bitmap {
-        var bmp = src
-        val needShadow = p.deshadow || p.filter == Filter.ENHANCED || p.filter == Filter.BW
-        if (needShadow) bmp = removeShadows(bmp)
-        if (p.filter == Filter.BW) bmp = threshold(bmp, 165)
-
-        val cm = ColorMatrix()
-        when (p.filter) {
-            Filter.GRAY -> cm.setSaturation(0f)
-            Filter.ENHANCED -> cm.setSaturation(1.15f)
-            else -> {}
-        }
-        val c = p.contrast * (if (p.filter == Filter.ENHANCED) 1.15f else 1f)
-        val t = 128f * (1f - c) + p.brightness
-        val bc = ColorMatrix(
-            floatArrayOf(
-                c, 0f, 0f, 0f, t,
-                0f, c, 0f, 0f, t,
-                0f, 0f, c, 0f, t,
-                0f, 0f, 0f, 1f, 0f
-            )
-        )
-        cm.postConcat(bc)
-        val out = Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888)
-        val paint = Paint().apply {
-            colorFilter = ColorMatrixColorFilter(cm)
-            isFilterBitmap = true
-        }
-        Canvas(out).drawBitmap(bmp, 0f, 0f, paint)
-        return out
-    }
-
-    private fun threshold(src: Bitmap, t: Int): Bitmap {
-        val w = src.width
-        val h = src.height
-        val px = IntArray(w * h)
-        src.getPixels(px, 0, w, 0, 0, w, h)
-        for (i in px.indices) {
-            val c = px[i]
-            val lum = (((c shr 16) and 255) * 299 + ((c shr 8) and 255) * 587 + (c and 255) * 114) / 1000
-            px[i] = if (lum < t) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
-        }
-        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        out.setPixels(px, 0, w, 0, 0, w, h)
-        return out
-    }
-
-    /** Divides the image by an estimate of its paper background so shadows disappear. */
-    fun removeShadows(src: Bitmap): Bitmap {
-        val w = src.width
-        val h = src.height
-        val sw = max(4, w / 12)
-        val sh = max(4, h / 12)
-        val small = Bitmap.createScaledBitmap(src, sw, sh, true)
-        val sp = IntArray(sw * sh)
-        small.getPixels(sp, 0, sw, 0, 0, sw, sh)
-        var lum = IntArray(sw * sh) {
-            val c = sp[it]
-            (((c shr 16) and 255) * 299 + ((c shr 8) and 255) * 587 + (c and 255) * 114) / 1000
-        }
-        // dilate (max filter) so dark text strokes vanish from the background estimate, then blur
-        val dil = IntArray(sw * sh)
-        val r = 3
-        for (y in 0 until sh) for (x in 0 until sw) {
-            var m = 0
-            for (dy in -r..r) {
-                val yy = y + dy
-                if (yy < 0 || yy >= sh) continue
-                for (dx in -r..r) {
-                    val xx = x + dx
-                    if (xx < 0 || xx >= sw) continue
-                    val v = lum[yy * sw + xx]
-                    if (v > m) m = v
-                }
-            }
-            dil[y * sw + x] = m
-        }
-        lum = boxBlur(dil, sw, sh, 3)
-        val bgSmall = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
-        val bgPx = IntArray(sw * sh) { val v = lum[it].coerceIn(0, 255); (0xFF shl 24) or (v shl 16) or (v shl 8) or v }
-        bgSmall.setPixels(bgPx, 0, sw, 0, 0, sw, sh)
-        val bg = Bitmap.createScaledBitmap(bgSmall, w, h, true)
-
-        val px = IntArray(w * h)
-        src.getPixels(px, 0, w, 0, 0, w, h)
-        val bp = IntArray(w * h)
-        bg.getPixels(bp, 0, w, 0, 0, w, h)
-        for (i in px.indices) {
-            val c = px[i]
-            val b = max(40, bp[i] and 255)
-            val f = 255f / (b * 0.95f)
-            val r2 = min(255, (((c shr 16) and 255) * f).toInt())
-            val g2 = min(255, (((c shr 8) and 255) * f).toInt())
-            val b2 = min(255, ((c and 255) * f).toInt())
-            px[i] = (0xFF shl 24) or (r2 shl 16) or (g2 shl 8) or b2
-        }
-        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        out.setPixels(px, 0, w, 0, 0, w, h)
-        return out
-    }
+    fun applyParams(src: Bitmap, p: EditParams): Bitmap = Filters.apply(src, p)
 
     // ---------------------------------------------------------------- overlays
 
