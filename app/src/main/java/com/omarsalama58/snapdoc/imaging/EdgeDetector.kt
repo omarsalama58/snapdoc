@@ -171,7 +171,61 @@ object EdgeDetector {
     private fun sideScores(q: DoubleArray, img: LabImg): DoubleArray = DoubleArray(4) { i ->
         val n = (i + 1) % 4
         val nv = outwardNormal(q, i)
-        sideDiff(img, q[2 * i], q[2 * i + 1], q[2 * n], q[2 * n + 1], nv[0], nv[1], 0.0, 0.0)
+        val v = sideDiff(img, q[2 * i], q[2 * i + 1], q[2 * n], q[2 * n + 1], nv[0], nv[1], 0.0, 0.0)
+        val ax = q[2 * i]; val ay = q[2 * i + 1]; val bx = q[2 * n]; val by = q[2 * n + 1]
+        val onBorder = (ax < 4 && bx < 4) || (ay < 4 && by < 4) ||
+            (ax > img.w - 5 && bx > img.w - 5) || (ay > img.h - 5 && by > img.h - 5)
+        // a side lying on the picture edge has no outside to compare with: give it a fair credit
+        if (onBorder) max(v, 12.0) else v
+    }
+
+    /** If a strip between a side and the picture edge is part of the document, stretch the side to the edge. */
+    private fun extendToBorder(q0: DoubleArray, img: LabImg): DoubleArray {
+        val q = q0.copyOf()
+        val w = img.w
+        val h = img.h
+        fun band(x0: Double, x1: Double, y0: Double, y1: Double): DoubleArray? {
+            val a = max(0, x0.toInt()); val b = min(w, x1.toInt())
+            val c = max(0, y0.toInt()); val d = min(h, y1.toInt())
+            if (b - a < 2 || d - c < 2) return null
+            val sum = DoubleArray(3)
+            var n = 0
+            for (y in c until d) for (x in a until b) {
+                for (k in 0..2) sum[k] += img.d[(y * w + x) * 3 + k].toDouble()
+                n++
+            }
+            return DoubleArray(3) { sum[it] / n }
+        }
+        fun dist(a: DoubleArray, b: DoubleArray) =
+            Math.sqrt((0..2).sumOf { (a[it] - b[it]) * (a[it] - b[it]) })
+        val xs = doubleArrayOf(q[0], q[2], q[4], q[6])
+        val ys = doubleArrayOf(q[1], q[3], q[5], q[7])
+        val l = min(xs[0], xs[3]); val r = max(xs[1], xs[2])
+        val t = min(ys[0], ys[1]); val b = max(ys[2], ys[3])
+        val mx0 = l + 0.1 * (r - l); val mx1 = r - 0.1 * (r - l)
+        val my0 = t + 0.1 * (b - t); val my1 = b - 0.1 * (b - t)
+        val inner = band(l + 0.2 * (r - l), r - 0.2 * (r - l), t + 0.2 * (b - t), b - 0.2 * (b - t)) ?: return q
+        val refs = ArrayList<DoubleArray>()
+        if (l > 0.08 * w) band(l - 12, l - 3, my0, my1)?.let { refs.add(it) }
+        if (w - r > 0.08 * w) band(r + 3, r + 12, my0, my1)?.let { refs.add(it) }
+        if (t > 0.08 * h) band(mx0, mx1, t - 12, t - 3)?.let { refs.add(it) }
+        if (h - b > 0.08 * h) band(mx0, mx1, b + 3, b + 12)?.let { refs.add(it) }
+        val bg: DoubleArray? = if (refs.isEmpty()) null else DoubleArray(3) { k ->
+            val v = refs.map { it[k] }.sorted()
+            if (v.size % 2 == 1) v[v.size / 2] else 0.5 * (v[v.size / 2 - 1] + v[v.size / 2])
+        }
+        fun decide(g: DoubleArray?): Boolean {
+            if (g == null) return false
+            val db = if (bg != null) dist(g, bg) else 99.0
+            val di = dist(g, inner)
+            return db > 16 || db > 1.2 * di
+        }
+        val maxGap = 0.2
+        if (5 < l && max(xs[0], xs[3]) < maxGap * w && decide(band(0.0, l - 1, my0, my1))) { q[0] = 0.0; q[6] = 0.0 }
+        if (5 < w - 1 - r && w - 1 - min(xs[1], xs[2]) < maxGap * w && decide(band(r + 1, w.toDouble(), my0, my1))) { q[2] = (w - 1).toDouble(); q[4] = (w - 1).toDouble() }
+        if (5 < t && max(ys[0], ys[1]) < maxGap * h && decide(band(mx0, mx1, 0.0, t - 1))) { q[1] = 0.0; q[3] = 0.0 }
+        if (5 < h - 1 - b && h - 1 - min(ys[2], ys[3]) < maxGap * h && decide(band(mx0, mx1, b + 1, h.toDouble()))) { q[5] = (h - 1).toDouble(); q[7] = (h - 1).toDouble() }
+        return q
     }
 
     private fun support(q: DoubleArray, img: LabImg): Double {
@@ -543,12 +597,12 @@ object EdgeDetector {
                 // prefer the outermost real boundary (e.g. a page around a block of text)
                 val enc = evals.filter {
                     it.area > best.area * 1.12 && it.touch < 2 && it.rect >= 0.6 &&
-                        it.weak2 >= 0.38 * best.weak2 && contains(it.q, best.q, tol * 0.75)
+                        it.weak2 >= 0.7 * best.weak2 && contains(it.q, best.q, tol * 0.75)
                 }
                 if (enc.isEmpty()) break
                 best = enc.maxByOrNull { it.score }!!
             }
-            val q = best.q
+            val q = extendToBorder(best.q, labImg)
             return FloatArray(8) {
                 val v = if (it % 2 == 0) q[it] / w else q[it] / h
                 v.toFloat().coerceIn(0f, 1f)
