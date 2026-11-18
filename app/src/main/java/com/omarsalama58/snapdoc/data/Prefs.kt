@@ -26,12 +26,12 @@ class Prefs(ctx: Context) {
         }
 
     /** Index into the Filter enum applied automatically to new scans. */
-    private val _defaultFilter = mutableIntStateOf(sp.getInt("defaultFilter2", Filter.ENHANCE.ordinal))
+    private val _defaultFilter = mutableIntStateOf(sp.getInt("defaultFilter3", Filter.LIGHTEN.ordinal))
     var defaultFilter: Int
         get() = _defaultFilter.intValue
         set(v) {
             _defaultFilter.intValue = v
-            sp.edit().putInt("defaultFilter2", v).apply()
+            sp.edit().putInt("defaultFilter3", v).apply()
         }
 }
 

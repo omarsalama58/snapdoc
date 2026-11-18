@@ -141,16 +141,23 @@ object Filters {
         return out
     }
 
+    /** Flatten uneven light, whiten the paper, keep colours and make the text crisp (like a scanner). */
     private fun lighten(bgr: Mat): Mat {
+        val bg = background(bgr)
+        val flat = divideBy(bgr, bg, 250.0)
+        bg.release()
+        val lv = levels(flat, 0.5, 92.0)
+        flat.release()
         val lut = Mat(1, 256, CvType.CV_8U)
         val data = ByteArray(256) { i ->
-            val v = Math.pow(i / 255.0, 0.72) * 1.06 * 255.0
-            min(255.0, v).toInt().toByte()
+            min(255.0, Math.pow(i / 255.0, 0.85) * 255.0).toInt().toByte()
         }
         lut.put(0, 0, data)
-        val out = Mat()
-        Core.LUT(bgr, lut, out)
-        lut.release()
+        val g = Mat()
+        Core.LUT(lv, lut, g)
+        lv.release(); lut.release()
+        val out = unsharp(g, 0.7, 1.4)
+        g.release()
         return out
     }
 
