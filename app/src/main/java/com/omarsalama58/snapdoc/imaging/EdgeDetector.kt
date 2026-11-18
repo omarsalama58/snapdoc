@@ -181,7 +181,7 @@ object EdgeDetector {
 
     /** If a strip between a side and the picture edge is part of the document, stretch the side to the edge. */
     private fun extendToBorder(q0: DoubleArray, img: LabImg): DoubleArray {
-        val q = q0.copyOf()
+        var q = q0.copyOf()
         val w = img.w
         val h = img.h
         fun band(x0: Double, x1: Double, y0: Double, y1: Double): DoubleArray? {
@@ -205,26 +205,50 @@ object EdgeDetector {
         val mx0 = l + 0.1 * (r - l); val mx1 = r - 0.1 * (r - l)
         val my0 = t + 0.1 * (b - t); val my1 = b - 0.1 * (b - t)
         val inner = band(l + 0.2 * (r - l), r - 0.2 * (r - l), t + 0.2 * (b - t), b - 0.2 * (b - t)) ?: return q
-        val refs = ArrayList<DoubleArray>()
-        if (l > 0.08 * w) band(l - 12, l - 3, my0, my1)?.let { refs.add(it) }
-        if (w - r > 0.08 * w) band(r + 3, r + 12, my0, my1)?.let { refs.add(it) }
-        if (t > 0.08 * h) band(mx0, mx1, t - 12, t - 3)?.let { refs.add(it) }
-        if (h - b > 0.08 * h) band(mx0, mx1, b + 3, b + 12)?.let { refs.add(it) }
-        val bg: DoubleArray? = if (refs.isEmpty()) null else DoubleArray(3) { k ->
-            val v = refs.map { it[k] }.sorted()
-            if (v.size % 2 == 1) v[v.size / 2] else 0.5 * (v[v.size / 2 - 1] + v[v.size / 2])
-        }
-        fun decide(g: DoubleArray?): Boolean {
+        val refs = HashMap<Char, DoubleArray>()
+        if (l > 0.08 * w) band(l - 12, l - 3, my0, my1)?.let { refs['l'] = it }
+        if (w - r > 0.08 * w) band(r + 3, r + 12, my0, my1)?.let { refs['r'] = it }
+        if (t > 0.08 * h) band(mx0, mx1, t - 12, t - 3)?.let { refs['t'] = it }
+        if (h - b > 0.08 * h) band(mx0, mx1, b + 3, b + 12)?.let { refs['b'] = it }
+        fun decide(side: Char, g: DoubleArray?): Boolean {
             if (g == null) return false
-            val db = if (bg != null) dist(g, bg) else 99.0
+            val others = refs.filter { it.key != side }.values.toList()
+            if (others.isEmpty()) return false
+            val bg = DoubleArray(3) { k ->
+                val v = others.map { it[k] }.sorted()
+                if (v.size % 2 == 1) v[v.size / 2] else 0.5 * (v[v.size / 2 - 1] + v[v.size / 2])
+            }
+            val db = dist(g, bg)
             val di = dist(g, inner)
-            return db > 16 || db > 1.2 * di
+            return db > 9 && di < db
         }
         val maxGap = 0.2
-        if (5 < l && max(xs[0], xs[3]) < maxGap * w && decide(band(0.0, l - 1, my0, my1))) { q[0] = 0.0; q[6] = 0.0 }
-        if (5 < w - 1 - r && w - 1 - min(xs[1], xs[2]) < maxGap * w && decide(band(r + 1, w.toDouble(), my0, my1))) { q[2] = (w - 1).toDouble(); q[4] = (w - 1).toDouble() }
-        if (5 < t && max(ys[0], ys[1]) < maxGap * h && decide(band(mx0, mx1, 0.0, t - 1))) { q[1] = 0.0; q[3] = 0.0 }
-        if (5 < h - 1 - b && h - 1 - min(ys[2], ys[3]) < maxGap * h && decide(band(mx0, mx1, b + 1, h.toDouble()))) { q[5] = (h - 1).toDouble(); q[7] = (h - 1).toDouble() }
+        if (5 < l && max(xs[0], xs[3]) < maxGap * w && decide('l', band(0.0, l - 1, my0, my1))) { q[0] = 0.0; q[6] = 0.0 }
+        if (5 < w - 1 - r && w - 1 - min(xs[1], xs[2]) < maxGap * w && decide('r', band(r + 1, w.toDouble(), my0, my1))) { q[2] = (w - 1).toDouble(); q[4] = (w - 1).toDouble() }
+        if (3 < t && max(ys[0], ys[1]) < maxGap * h && decide('t', band(mx0, mx1, 0.0, t - 1))) { q[1] = 0.0; q[3] = 0.0 }
+        if (5 < h - 1 - b && h - 1 - min(ys[2], ys[3]) < maxGap * h && decide('b', band(mx0, mx1, b + 1, h.toDouble()))) { q[5] = (h - 1).toDouble(); q[7] = (h - 1).toDouble() }
+
+        // Cards and A4 pages have well known proportions: stretch a side to the edge when that makes it match.
+        fun std(a: Double, c: Double): Double {
+            val ratio = max(a, c) / max(1e-6, min(a, c))
+            return min(abs(ratio / 1.585 - 1), abs(ratio / 1.414 - 1))
+        }
+        fun aspectOk(n: DoubleArray): Boolean {
+            val a = hypot(n[2] - n[0], n[3] - n[1]); val c = hypot(n[6] - n[0], n[7] - n[1])
+            val o = hypot(q[2] - q[0], q[3] - q[1]); val p = hypot(q[6] - q[0], q[7] - q[1])
+            return std(a, c) < 0.06 && std(o, p) >= 0.06
+        }
+        for (side in "lrtb") {
+            val nq = q.copyOf()
+            when {
+                side == 'l' && 5 < min(q[0], q[6]) && min(q[0], q[6]) < maxGap * w -> { nq[0] = 0.0; nq[6] = 0.0 }
+                side == 'r' && 5 < w - 1 - max(q[2], q[4]) && w - 1 - max(q[2], q[4]) < maxGap * w -> { nq[2] = (w - 1).toDouble(); nq[4] = (w - 1).toDouble() }
+                side == 't' && 3 < min(q[1], q[3]) && min(q[1], q[3]) < maxGap * h -> { nq[1] = 0.0; nq[3] = 0.0 }
+                side == 'b' && 5 < h - 1 - max(q[5], q[7]) && h - 1 - max(q[5], q[7]) < maxGap * h -> { nq[5] = (h - 1).toDouble(); nq[7] = (h - 1).toDouble() }
+                else -> continue
+            }
+            if (aspectOk(nq)) q = nq
+        }
         return q
     }
 
@@ -407,13 +431,14 @@ object EdgeDetector {
     }
 
     /** Colour distance of every pixel from the colour of the photo's border ring. */
-    private fun distanceMap(labImg: LabImg): FloatArray {
+    private fun distanceMap(labImg: LabImg, sides: IntArray): FloatArray {
         val w = labImg.w
         val h = labImg.h
         val b = max(3, (0.05 * min(w, h)).toInt())
         val ring = ArrayList<Int>()
         for (y in 0 until h) for (x in 0 until w) {
-            if (y < b || y >= h - b || x < b || x >= w - b) ring.add(y * w + x)
+            val inRing = (0 in sides && y < b) || (2 in sides && y >= h - b) || (3 in sides && x < b) || (1 in sides && x >= w - b)
+            if (inRing) ring.add(y * w + x)
         }
         var sample = ring.toIntArray()
         var mu = DoubleArray(3)
@@ -461,21 +486,68 @@ object EdgeDetector {
         )
     }
 
+    private val sideSets = arrayOf(
+        intArrayOf(0, 1, 2, 3), intArrayOf(1, 2, 3), intArrayOf(0, 2, 3), intArrayOf(0, 1, 3), intArrayOf(0, 1, 2)
+    )
+
     private fun colorCandidates(labImg: LabImg, track: (Mat) -> Mat): List<DoubleArray> {
         val w = labImg.w
         val h = labImg.h
-        val dist = distanceMap(labImg)
-        val distMat = track(Mat(h, w, CvType.CV_32FC1))
-        distMat.put(0, 0, dist)
         val k = track(Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(7.0, 7.0)))
         val out = ArrayList<DoubleArray>()
-        for (th in doubleArrayOf(3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 14.0)) {
-            val m = track(Mat())
-            Core.compare(distMat, Scalar(th), m, Core.CMP_GT)
-            Imgproc.morphologyEx(m, m, Imgproc.MORPH_CLOSE, k)
-            Imgproc.morphologyEx(m, m, Imgproc.MORPH_OPEN, k)
-            fillHoles(m)
-            largestQuad(m, 0.10 * w * h)?.let { out.add(it) }
+        for ((si, ss) in sideSets.withIndex()) {
+            val dist = distanceMap(labImg, ss)
+            val distMat = track(Mat(h, w, CvType.CV_32FC1))
+            distMat.put(0, 0, dist)
+            val ths = if (si == 0) doubleArrayOf(3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 14.0) else doubleArrayOf(4.0, 6.0, 8.0, 12.0)
+            for (th in ths) {
+                val m = track(Mat())
+                Core.compare(distMat, Scalar(th), m, Core.CMP_GT)
+                Imgproc.morphologyEx(m, m, Imgproc.MORPH_CLOSE, k)
+                Imgproc.morphologyEx(m, m, Imgproc.MORPH_OPEN, k)
+                fillHoles(m)
+                largestQuad(m, 0.10 * w * h)?.let { out.add(it) }
+            }
+        }
+        return out
+    }
+
+    /** Axis-aligned seeds: scan inward from every picture side and take the OUTERMOST clear edge. */
+    private fun sweepCandidates(img: LabImg): List<DoubleArray> {
+        val w = img.w.toDouble()
+        val h = img.h.toDouble()
+        fun prof(side: Int, o: Double): Double = when (side) {
+            0 -> sideDiff(img, 0.1 * w, o, 0.9 * w, o, 0.0, -1.0, 0.0, 0.0)
+            2 -> sideDiff(img, 0.9 * w, h - 1 - o, 0.1 * w, h - 1 - o, 0.0, 1.0, 0.0, 0.0)
+            1 -> sideDiff(img, w - 1 - o, 0.1 * h, w - 1 - o, 0.9 * h, 1.0, 0.0, 0.0, 0.0)
+            else -> sideDiff(img, o, 0.9 * h, o, 0.1 * h, -1.0, 0.0, 0.0, 0.0)
+        }
+        val ratios = doubleArrayOf(0.35, 0.55)
+        val pos = Array(4) { IntArray(2) }
+        for (side in 0..3) {
+            val span = if (side == 0 || side == 2) h else w
+            val offs = ArrayList<Int>()
+            var o = 3
+            while (o < (0.55 * span).toInt()) { offs.add(o); o += 2 }
+            if (offs.size < 3) return emptyList()
+            val p = DoubleArray(offs.size) { prof(side, offs[it].toDouble()) }
+            val mx = p.max()
+            for (r in 0..1) {
+                val thr = max(7.0, ratios[r] * mx)
+                var pick = 0
+                for (k in 1 until offs.size - 1) {
+                    if (p[k] >= thr && p[k] >= p[k - 1] && p[k] >= p[k + 1]) { pick = offs[k]; break }
+                }
+                pos[side][r] = pick
+            }
+        }
+        val out = ArrayList<DoubleArray>()
+        val seen = HashSet<List<Int>>()
+        for (r in 0..1) {
+            val t = pos[0][r].toDouble(); val rt = pos[1][r].toDouble()
+            val b = pos[2][r].toDouble(); val l = pos[3][r].toDouble()
+            if (!seen.add(listOf(pos[0][r], pos[1][r], pos[2][r], pos[3][r]))) continue
+            out.add(doubleArrayOf(l, t, w - 1 - rt, t, w - 1 - rt, h - 1 - b, l, h - 1 - b))
         }
         return out
     }
@@ -551,6 +623,7 @@ object EdgeDetector {
             raw.addAll(cannyCandidates(blurBgr, w, h, { track(it) }))
             raw.addAll(colorCandidates(labImg, { track(it) }))
             raw.addAll(otsuCandidates(blurBgr, w, h, { track(it) }))
+            raw.addAll(sweepCandidates(labImg))
 
             val imgArea = w.toDouble() * h
             val tol = 0.04 * max(w, h)
