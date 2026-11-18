@@ -571,6 +571,16 @@ object EdgeDetector {
 
     // ------------------------------------------------------------------ main
 
+    private fun insideConvex(q: DoubleArray, px: Double, py: Double): Boolean {
+        var pos = 0; var neg = 0
+        for (i in 0..3) {
+            val j = (i + 1) % 4
+            val cr = (q[2 * j] - q[2 * i]) * (py - q[2 * i + 1]) - (q[2 * j + 1] - q[2 * i + 1]) * (px - q[2 * i])
+            if (cr > 0) pos++ else if (cr < 0) neg++
+        }
+        return pos == 0 || neg == 0
+    }
+
     private class Eval(
         val q: DoubleArray, val area: Double, val sup: Double, val rect: Double,
         val touch: Int, val score: Double, val weak2: Double
@@ -674,6 +684,35 @@ object EdgeDetector {
                 }
                 if (enc.isEmpty()) break
                 best = enc.maxByOrNull { it.score }!!
+            }
+            // band check: if what lies outside a strong inner quad is not paper-like (cloth, table), keep the inner quad
+            for (iter in 0 until 3) {
+                val cur = best
+                val cands = evals.filter {
+                    it !== cur && it.area < cur.area * 0.92 && it.area >= 0.5 * cur.area &&
+                        it.rect >= 0.85 && it.sup >= 0.85 * cur.sup && contains(cur.q, it.q, 0.03 * max(w, h))
+                }.sortedByDescending { it.area }
+                var sw: Eval? = null
+                for (e in cands) {
+                    val sb = DoubleArray(3); val si = DoubleArray(3)
+                    var nb = 0; var ni = 0; var no = 0
+                    for (y in 0 until h) for (x in 0 until w) {
+                        if (!insideConvex(cur.q, x + 0.5, y + 0.5)) continue
+                        no++
+                        val k = (y * w + x) * 3
+                        if (insideConvex(e.q, x + 0.5, y + 0.5)) {
+                            ni++; for (c in 0..2) si[c] += labImg.d[k + c].toDouble()
+                        } else {
+                            nb++; for (c in 0..2) sb[c] += labImg.d[k + c].toDouble()
+                        }
+                    }
+                    if (nb < 0.10 * no || ni == 0) continue
+                    var d2 = 0.0
+                    for (c in 0..2) { val dd = sb[c] / nb - si[c] / ni; d2 += dd * dd }
+                    if (sqrt(d2) > 40.0) { sw = e; break }
+                }
+                if (sw == null) break
+                best = sw
             }
             val q = extendToBorder(best.q, labImg)
             return FloatArray(8) {

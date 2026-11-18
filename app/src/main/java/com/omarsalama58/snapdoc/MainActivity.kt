@@ -1,6 +1,7 @@
 package com.omarsalama58.snapdoc
 
 import android.graphics.Bitmap
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -71,14 +72,40 @@ sealed interface Screen {
 }
 
 class MainActivity : ComponentActivity() {
+    private val shared = mutableStateOf<List<Uri>>(emptyList())
+
+    private fun readShared(i: Intent?) {
+        if (i == null) return
+        val list = ArrayList<Uri>()
+        when (i.action) {
+            Intent.ACTION_SEND -> {
+                @Suppress("DEPRECATION")
+                (i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM) ?: i.data)?.let { list.add(it) }
+            }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                @Suppress("DEPRECATION")
+                i.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.let { list.addAll(it) }
+            }
+            Intent.ACTION_VIEW -> i.data?.let { list.add(it) }
+        }
+        if (list.isNotEmpty()) shared.value = list
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        if (savedInstanceState == null) readShared(intent)
         setContent {
             SnapDocTheme {
-                AppRoot()
+                AppRoot(shared.value) { shared.value = emptyList() }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        readShared(intent)
     }
 }
 
@@ -90,7 +117,7 @@ private fun cropActionFor(mode: ScanMode): CropAction = when (mode) {
 }
 
 @Composable
-private fun AppRoot() {
+private fun AppRoot(sharedUris: List<Uri>, onSharedHandled: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val store = remember { DocStore(ctx) }
@@ -115,11 +142,8 @@ private fun AppRoot() {
     fun defaultFilter(): Filter = Filter.values()[prefs.defaultFilter.coerceIn(0, Filter.values().size - 1)]
 
     // gallery import: one image -> manual crop, several -> automatic crop into one document
-    val galleryLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickMultipleVisualMedia(30)
-    ) { uris: List<Uri> ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        val target = importTarget
+    fun handleImages(uris: List<Uri>, target: String?) {
+        if (uris.isEmpty()) return
         if (uris.size == 1) {
             busy = "Opening image..."
             scope.launch {
@@ -148,14 +172,16 @@ private fun AppRoot() {
             }
         }
     }
+    val galleryLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(30)
+    ) { uris: List<Uri> -> handleImages(uris, importTarget) }
     fun pickImages(target: String?) {
         importTarget = target
         galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     }
 
     // importing an existing PDF: every page becomes an editable page
-    val pdfLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-        if (uri == null) return@rememberLauncherForActivityResult
+    fun handlePdf(uri: Uri) {
         busy = "Importing PDF..."
         scope.launch {
             val id = withContext(Dispatchers.IO) {
@@ -169,6 +195,19 @@ private fun AppRoot() {
             busy = null
             if (id == null) toast(ctx, "Couldn't read this PDF") else goDoc(id)
         }
+    }
+    val pdfLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) handlePdf(uri)
+    }
+
+    // files shared to SnapDoc from the gallery, files app, other apps
+    androidx.compose.runtime.LaunchedEffect(sharedUris) {
+        if (sharedUris.isEmpty()) return@LaunchedEffect
+        val uris = sharedUris
+        onSharedHandled()
+        val isPdf = uris.size == 1 && (ctx.contentResolver.getType(uris[0]) == "application/pdf" ||
+            uris[0].toString().lowercase().endsWith(".pdf"))
+        if (isPdf) handlePdf(uris[0]) else handleImages(uris, null)
     }
 
     Box(
